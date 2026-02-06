@@ -1,6 +1,7 @@
 // server.js
 // Node.js backend for File Converter Web App
 
+const bcrypt = require("bcrypt");
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -20,16 +21,52 @@ app.use(express.json());
 // Storage setup
 const upload = multer({ dest: 'uploads/' });
 
-// Demo login API
-app.post('/login', (req, res) => {
+app.post("/register", async (req, res) => {
   const { username, password } = req.body;
 
-  if (username && password) {
-    return res.json({ success: true, message: 'Login successful' });
+  if (!username || !password) {
+    return res.status(400).json({ message: "Username and password required" });
   }
 
-  res.status(400).json({ success: false, message: 'Invalid credentials' });
+  const users = JSON.parse(fs.readFileSync("users.json", "utf-8"));
+
+  const userExists = users.find(u => u.username === username);
+  if (userExists) {
+    return res.status(400).json({ message: "User already exists" });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  users.push({
+    username,
+    password: hashedPassword
+  });
+
+  fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
+
+  res.json({ success: true, message: "Registration successful" });
 });
+
+// login API
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  const users = JSON.parse(fs.readFileSync("users.json", "utf-8"));
+  const user = users.find(u => u.username === username);
+
+  if (!user) {
+    return res.status(400).json({ message: "User not found" });
+  }
+
+  const isMatch = await bcrypt.compare(password, user.password);
+
+  if (!isMatch) {
+    return res.status(401).json({ message: "Invalid password" });
+  }
+
+  res.json({ success: true, message: "Login successful" });
+});
+
 
 // File conversion API
 app.post("/convert", upload.single("file"), async (req, res) => {
