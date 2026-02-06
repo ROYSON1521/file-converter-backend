@@ -6,6 +6,10 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const PDFDocument = require("pdfkit");
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
+const { Document, Packer, Paragraph } = require("docx");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,32 +32,87 @@ app.post('/login', (req, res) => {
 });
 
 // File conversion API
-app.post('/convert', upload.single('file'), (req, res) => {
-  const format = req.body.format;
+app.post("/convert", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+  return res.status(400).send("No file uploaded");
+  }
+const { format } = req.body;
+const ext = path.extname(req.file.originalname).toLowerCase();
+
+const allowedMap = {
+  txt_to_pdf: [".txt"],
+  txt_to_docx: [".txt"],
+  pdf_to_txt: [".pdf"],
+  docx_to_txt: [".docx"],
+  pdf_to_docx: [".pdf"],
+};
+
+if (!allowedMap[format]?.includes(ext)) {
+  return res.status(400).send("Invalid file type for selected conversion");
+}
+
   const filePath = req.file.path;
+  const originalName = req.file.originalname;
 
-  fs.readFile(filePath, 'utf8', (err, data) => {
-    if (err) return res.status(500).send('File read error');
-
-    let output;
-    let ext;
-
-    if (format === 'json') {
-      output = JSON.stringify({ data }, null, 2);
-      ext = '.json';
-    } else {
-      output = data;
-      ext = '.txt';
+  try {
+    // TXT → PDF
+    if (format === "txt_to_pdf") {
+      const text = fs.readFileSync(filePath, "utf-8");
+      const pdf = new PDFDocument();
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", "attachment; filename=output.pdf");
+      pdf.pipe(res);
+      pdf.text(text);
+      pdf.end();
     }
 
-    const outputPath = filePath + ext;
-    fs.writeFileSync(outputPath, output);
+    // TXT → DOCX
+    else if (format === "txt_to_docx") {
+      const text = fs.readFileSync(filePath, "utf-8");
+      const doc = new Document({
+        sections: [{ children: [new Paragraph(text)] }],
+      });
+      const buffer = await Packer.toBuffer(doc);
+      res.setHeader("Content-Disposition", "attachment; filename=output.docx");
+      res.send(buffer);
+    }
 
-    res.download(outputPath, () => {
-      fs.unlinkSync(filePath);
-      fs.unlinkSync(outputPath);
-    });
-  });
+    // PDF → TXT
+    else if (format === "pdf_to_txt") {
+      const data = await pdfParse(fs.readFileSync(filePath));
+      res.setHeader("Content-Disposition", "attachment; filename=output.txt");
+      res.send(data.text);
+    }
+
+    // DOCX → TXT
+    else if (format === "docx_to_txt") {
+      const result = await mammoth.extractRawText({ path: filePath });
+      res.setHeader("Content-Disposition", "attachment; filename=output.txt");
+      res.send(result.value);
+    }
+
+    // PDF → DOCX
+    else if (format === "pdf_to_docx") {
+      const data = await pdfParse(fs.readFileSync(filePath));
+      const doc = new Document({
+        sections: [{ children: [new Paragraph(data.text)] }],
+      });
+      const buffer = await Packer.toBuffer(doc);
+      res.setHeader("Content-Disposition", "attachment; filename=output.docx");
+      res.send(buffer);
+    }
+
+    else {
+      res.status(400).send("Unsupported conversion type");
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Conversion failed");
+  } finally {
+    if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  } // cleanup
+  }
 });
 
 app.listen(PORT, () => {
