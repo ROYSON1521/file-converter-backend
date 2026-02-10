@@ -11,6 +11,8 @@ const PDFDocument = require("pdfkit");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 const { Document, Packer, Paragraph } = require("docx");
+const jwt = require("jsonwebtoken");
+const SECRET_KEY = "super_secret_key_123"; // use env var later
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,26 +52,34 @@ app.post("/register", async (req, res) => {
 // login API
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
+  const users = JSON.parse(fs.readFileSync("users.json"));
 
-  const users = JSON.parse(fs.readFileSync("users.json", "utf-8"));
   const user = users.find(u => u.username === username);
-
-  if (!user) {
-    return res.status(400).json({ message: "User not found" });
-  }
+  if (!user) return res.status(401).json({ message: "User not found" });
 
   const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) return res.status(401).json({ message: "Invalid password" });
 
-  if (!isMatch) {
-    return res.status(401).json({ message: "Invalid password" });
-  }
+  const token = jwt.sign({ username }, SECRET_KEY, { expiresIn: "1h" });
 
-  res.json({ success: true, message: "Login successful" });
+  res.json({ token });
 });
 
+function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(403).json({ message: "No token provided" });
+
+  const token = authHeader.split(" ")[1];
+
+  jwt.verify(token, SECRET_KEY, (err, decoded) => {
+    if (err) return res.status(401).json({ message: "Invalid token" });
+    req.user = decoded;
+    next();
+  });
+}
 
 // File conversion API
-app.post("/convert", upload.single("file"), async (req, res) => {
+app.post("/convert", verifyToken, upload.single("file"), async (req, res) => {
   if (!req.file) {
   return res.status(400).send("No file uploaded");
   }
