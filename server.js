@@ -7,6 +7,7 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const usersPath = path.join(__dirname, "users.json");
 const PDFDocument = require("pdfkit");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
@@ -18,7 +19,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json());;
 
 // Storage setup
 const upload = multer({ dest: 'uploads/' });
@@ -29,8 +30,11 @@ app.post("/register", async (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ message: "Username and password required" });
   }
+  let users = [];
 
-  const users = JSON.parse(fs.readFileSync("users.json", "utf-8"));
+  if (fs.existsSync(usersPath)) {
+     users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
+   }
 
   const userExists = users.find(u => u.username === username);
   if (userExists) {
@@ -43,8 +47,11 @@ app.post("/register", async (req, res) => {
     username,
     password: hashedPassword
   });
+  console.log("Users before push:", users);
+  console.log("New user:", username);
+  console.log("Users saved:", users);
 
-  fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
+  fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
 
   res.json({ success: true, message: "Registration successful" });
 });
@@ -52,7 +59,8 @@ app.post("/register", async (req, res) => {
 // login API
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
-  const users = JSON.parse(fs.readFileSync("users.json"));
+  const users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
+
 
   const user = users.find(u => u.username === username);
   if (!user) return res.status(401).json({ message: "User not found" });
