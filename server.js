@@ -50,6 +50,8 @@ app.post("/register", async (req, res) => {
   console.log("Users before push:", users);
   console.log("New user:", username);
   console.log("Users saved:", users);
+  console.log("Writing to file at:", usersPath);
+  console.log("Final users array:", users);
 
   fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
 
