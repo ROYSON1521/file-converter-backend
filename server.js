@@ -14,6 +14,8 @@ const mammoth = require("mammoth");
 const { Document, Packer, Paragraph } = require("docx");
 const jwt = require("jsonwebtoken");
 const sharp = require("sharp");
+const { spawn } = require("child_process");
+const ffmpegPath = require("ffmpeg-static");
 const SECRET_KEY = process.env.JWT_SECRET;
 
 const app = express();
@@ -27,7 +29,30 @@ if (!SECRET_KEY) {
 }
 
 // Storage setup
-const upload = multer({ dest: 'uploads/' });
+const MAX_UPLOAD_SIZE = 40 * 1024 * 1024;
+const upload = multer({ dest: 'uploads/', limits: { fileSize: MAX_UPLOAD_SIZE } });
+
+function transcodeAudio(inputPath, outputPath, outputFormat) {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) return reject(new Error("FFmpeg binary is unavailable on this server"));
+
+    const args = ["-hide_banner", "-loglevel", "error", "-y", "-i", inputPath, "-map", "0:a:0", "-vn"];
+    if (outputFormat === "m4a") args.push("-c:a", "aac", "-b:a", "192k");
+    else args.push("-c:a", "pcm_s16le");
+    args.push(outputPath);
+
+    const ffmpeg = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let errorOutput = "";
+    ffmpeg.stderr.on("data", chunk => {
+      errorOutput = (errorOutput + chunk.toString()).slice(-4000);
+    });
+    ffmpeg.once("error", reject);
+    ffmpeg.once("close", code => {
+      if (code === 0) resolve();
+      else reject(new Error(errorOutput || `FFmpeg exited with code ${code}`));
+    });
+  });
+}
 
 function readUsers() {
   if (!fs.existsSync(usersPath)) return [];
@@ -119,6 +144,9 @@ const allowedMap = {
   jpeg_to_png: [".jpeg"],
   png_to_jpeg: [".png"],
   webp_to_jpeg: [".webp"],
+  mp3_to_m4a: [".mp3"],
+  mp3_to_wav: [".mp3"],
+  m4a_to_wav: [".m4a"],
 };
 
 if (!allowedMap[format]?.includes(ext)) {
@@ -189,6 +217,25 @@ if (!allowedMap[format]?.includes(ext)) {
       res.send(output);
     }
 
+    else if (["mp3_to_m4a", "mp3_to_wav", "m4a_to_wav"].includes(format)) {
+      const outputFormat = format.endsWith("_m4a") ? "m4a" : "wav";
+      const outputPath = `${filePath}.${outputFormat}`;
+      try {
+        await transcodeAudio(filePath, outputPath, outputFormat);
+        await new Promise(resolve => {
+          res.download(outputPath, `converted.${outputFormat}`, err => {
+            if (err) {
+              console.error("Audio download error:", err);
+              if (!res.headersSent) res.status(500).send("Could not send converted audio");
+            }
+            resolve();
+          });
+        });
+      } finally {
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      }
+    }
+
     else {
       res.status(400).send("Unsupported conversion type");
     }
@@ -200,6 +247,14 @@ if (!allowedMap[format]?.includes(ext)) {
     fs.unlinkSync(filePath);
   } // cleanup
   }
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ message: "File size exceeds the 40 MB limit." });
+  }
+  console.error("Request error:", err);
+  return res.status(500).json({ message: "The server could not process the upload." });
 });
 
 app.listen(PORT, () => {
