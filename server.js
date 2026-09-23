@@ -317,8 +317,14 @@ if (!allowedMap[format]?.includes(ext)) {
       res.status(400).send("Unsupported conversion type");
     }
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Conversion failed");
+    console.error(`Conversion failed for ${format}:`, err);
+    const officeFormat = format === "docx_to_pdf" || format === "pptx_to_pdf";
+    const message = officeFormat
+      ? err.code === "ENOENT"
+        ? "LibreOffice is missing on the backend. Confirm Render deployed the Dockerfile."
+        : "Office-to-PDF conversion failed. Check the Render logs for the LibreOffice error."
+      : "Conversion failed";
+    if (!res.headersSent) res.status(500).send(message);
   } finally {
     if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
