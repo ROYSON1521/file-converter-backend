@@ -7,6 +7,8 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { pathToFileURL } = require('url');
 const usersPath = process.env.USERS_FILE || path.join(__dirname, "users.json");
 const PDFDocument = require("pdfkit");
 const pdfParse = require("pdf-parse");
@@ -38,6 +40,7 @@ function transcodeAudio(inputPath, outputPath, outputFormat) {
 
     const args = ["-hide_banner", "-loglevel", "error", "-y", "-i", inputPath, "-map", "0:a:0", "-vn"];
     if (outputFormat === "m4a") args.push("-c:a", "aac", "-b:a", "192k");
+    else if (outputFormat === "flac") args.push("-c:a", "flac");
     else args.push("-c:a", "pcm_s16le");
     args.push(outputPath);
 
@@ -52,6 +55,56 @@ function transcodeAudio(inputPath, outputPath, outputFormat) {
       else reject(new Error(errorOutput || `FFmpeg exited with code ${code}`));
     });
   });
+}
+
+async function convertOfficeToPdf(sourcePath, originalName) {
+  const extension = path.extname(originalName).toLowerCase();
+  const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "file-converter-office-"));
+  const inputPath = path.join(workingDir, `document${extension}`);
+  const outputPath = path.join(workingDir, "document.pdf");
+  const profilePath = path.join(workingDir, "lo-profile");
+  fs.copyFileSync(sourcePath, inputPath);
+
+  try {
+    await new Promise((resolve, reject) => {
+      const args = [
+        "--headless", "--nologo", "--nodefault", "--nolockcheck", "--norestore",
+        `-env:UserInstallation=${pathToFileURL(profilePath).href}`,
+        "--convert-to", "pdf", "--outdir", workingDir, inputPath,
+      ];
+      const office = spawn(process.env.LIBREOFFICE_PATH || "soffice", args, { stdio: ["ignore", "ignore", "pipe"] });
+      let errorOutput = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        office.kill("SIGKILL");
+        if (!settled) {
+          settled = true;
+          reject(new Error("Office conversion timed out"));
+        }
+      }, 90000);
+      office.stderr.on("data", chunk => {
+        errorOutput = (errorOutput + chunk.toString()).slice(-4000);
+      });
+      office.once("error", err => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+      office.once("close", code => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        if (code === 0 && fs.existsSync(outputPath)) resolve();
+        else reject(new Error(errorOutput || `LibreOffice exited with code ${code}`));
+      });
+    });
+    return { outputPath, workingDir };
+  } catch (err) {
+    fs.rmSync(workingDir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 function readUsers() {
@@ -140,12 +193,16 @@ const allowedMap = {
   pdf_to_txt: [".pdf"],
   docx_to_txt: [".docx"],
   pdf_to_docx: [".pdf"],
+  docx_to_pdf: [".docx"],
+  pptx_to_pdf: [".pptx"],
   jpg_to_png: [".jpg"],
   jpeg_to_png: [".jpeg"],
   png_to_jpeg: [".png"],
   webp_to_jpeg: [".webp"],
+  webp_to_png: [".webp"],
   mp3_to_m4a: [".mp3"],
   mp3_to_wav: [".mp3"],
+  mp3_to_flac: [".mp3"],
   m4a_to_wav: [".m4a"],
 };
 
@@ -205,7 +262,7 @@ if (!allowedMap[format]?.includes(ext)) {
       res.send(buffer);
     }
 
-    else if (["jpg_to_png", "jpeg_to_png", "png_to_jpeg", "webp_to_jpeg"].includes(format)) {
+    else if (["jpg_to_png", "jpeg_to_png", "png_to_jpeg", "webp_to_jpeg", "webp_to_png"].includes(format)) {
       const toPng = format.endsWith("_to_png");
       const outputFormat = toPng ? "png" : "jpeg";
       const output = await sharp(filePath)
@@ -217,8 +274,8 @@ if (!allowedMap[format]?.includes(ext)) {
       res.send(output);
     }
 
-    else if (["mp3_to_m4a", "mp3_to_wav", "m4a_to_wav"].includes(format)) {
-      const outputFormat = format.endsWith("_m4a") ? "m4a" : "wav";
+    else if (["mp3_to_m4a", "mp3_to_wav", "mp3_to_flac", "m4a_to_wav"].includes(format)) {
+      const outputFormat = format.endsWith("_m4a") ? "m4a" : format.endsWith("_flac") ? "flac" : "wav";
       const outputPath = `${filePath}.${outputFormat}`;
       try {
         await transcodeAudio(filePath, outputPath, outputFormat);
@@ -233,6 +290,26 @@ if (!allowedMap[format]?.includes(ext)) {
         });
       } finally {
         if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      }
+    }
+
+    else if (["docx_to_pdf", "pptx_to_pdf"].includes(format)) {
+      let officeFiles;
+      try {
+        officeFiles = await convertOfficeToPdf(filePath, originalName);
+        await new Promise(resolve => {
+          res.download(officeFiles.outputPath, `${path.parse(originalName).name}.pdf`, err => {
+            if (err) {
+              console.error("Office document download error:", err);
+              if (!res.headersSent) res.status(500).send("Could not send converted PDF");
+            }
+            resolve();
+          });
+        });
+      } finally {
+        if (officeFiles && fs.existsSync(officeFiles.workingDir)) {
+          fs.rmSync(officeFiles.workingDir, { recursive: true, force: true });
+        }
       }
     }
 
