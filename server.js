@@ -13,6 +13,7 @@ const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 const { Document, Packer, Paragraph } = require("docx");
 const jwt = require("jsonwebtoken");
+const sharp = require("sharp");
 const SECRET_KEY = process.env.JWT_SECRET;
 
 const app = express();
@@ -114,9 +115,14 @@ const allowedMap = {
   pdf_to_txt: [".pdf"],
   docx_to_txt: [".docx"],
   pdf_to_docx: [".pdf"],
+  jpg_to_png: [".jpg"],
+  jpeg_to_png: [".jpeg"],
+  png_to_jpeg: [".png"],
+  webp_to_jpeg: [".webp"],
 };
 
 if (!allowedMap[format]?.includes(ext)) {
+  fs.unlinkSync(req.file.path);
   return res.status(400).send("Invalid file type for selected conversion");
 }
 
@@ -169,6 +175,18 @@ if (!allowedMap[format]?.includes(ext)) {
       const buffer = await Packer.toBuffer(doc);
       res.setHeader("Content-Disposition", "attachment; filename=output.docx");
       res.send(buffer);
+    }
+
+    else if (["jpg_to_png", "jpeg_to_png", "png_to_jpeg", "webp_to_jpeg"].includes(format)) {
+      const toPng = format.endsWith("_to_png");
+      const outputFormat = toPng ? "png" : "jpeg";
+      const output = await sharp(filePath)
+        .rotate()
+        .toFormat(outputFormat, outputFormat === "jpeg" ? { quality: 90 } : {})
+        .toBuffer();
+      res.setHeader("Content-Type", outputFormat === "png" ? "image/png" : "image/jpeg");
+      res.setHeader("Content-Disposition", `attachment; filename=output.${outputFormat}`);
+      res.send(output);
     }
 
     else {
