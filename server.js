@@ -7,73 +7,84 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const usersPath = path.join(__dirname, "users.json");
+const usersPath = process.env.USERS_FILE || path.join(__dirname, "users.json");
 const PDFDocument = require("pdfkit");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 const { Document, Packer, Paragraph } = require("docx");
 const jwt = require("jsonwebtoken");
-const SECRET_KEY = "super_secret_key_123"; // use env var later
+const SECRET_KEY = process.env.JWT_SECRET;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());;
+app.use(express.json());
+
+if (!SECRET_KEY) {
+  throw new Error("JWT_SECRET environment variable must be configured");
+}
 
 // Storage setup
 const upload = multer({ dest: 'uploads/' });
 
+function readUsers() {
+  if (!fs.existsSync(usersPath)) return [];
+  const users = JSON.parse(fs.readFileSync(usersPath, "utf8"));
+  if (!Array.isArray(users)) throw new Error("User data file has an invalid format");
+  return users;
+}
+
+function writeUsers(users) {
+  const tempPath = `${usersPath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(users, null, 2), { mode: 0o600 });
+  fs.renameSync(tempPath, usersPath);
+}
+
 app.post("/register", async (req, res) => {
-  const { username, password } = req.body;
+  try {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!username || !password.trim()) {
+      return res.status(400).json({ message: "Username and password required" });
+    }
 
-  if (!username || !password) {
-    return res.status(400).json({ message: "Username and password required" });
+    const users = readUsers();
+    if (users.some(user => user.username.toLowerCase() === username.toLowerCase())) {
+      return res.status(409).json({ message: "User already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    users.push({ username, password: hashedPassword });
+    writeUsers(users);
+    return res.status(201).json({ success: true, message: "Registration successful" });
+  } catch (err) {
+    console.error("Registration error:", err);
+    return res.status(500).json({ message: "Could not save the account. Check server storage and logs." });
   }
-  let users = [];
-
-  if (fs.existsSync(usersPath)) {
-     users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
-   }
-
-  const userExists = users.find(u => u.username === username);
-  if (userExists) {
-    return res.status(400).json({ message: "User already exists" });
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  users.push({
-    username,
-    password: hashedPassword
-  });
-  console.log("Users before push:", users);
-  console.log("New user:", username);
-  console.log("Users saved:", users);
-  console.log("Current working directory:", process.cwd());
-  console.log("Writing to file at:", usersPath);
-  console.log("Final users array:", users);
-
-  fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
-
-  res.json({ success: true, message: "Registration successful" });
 });
 
-// login API
 app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-  const users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
+  try {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!username || !password) {
+      return res.status(400).json({ message: "Username and password required" });
+    }
 
+    const users = readUsers();
+    const user = users.find(item => item.username.toLowerCase() === username.toLowerCase());
+    if (!user) return res.status(401).json({ message: "User not found" });
 
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(401).json({ message: "User not found" });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(401).json({ message: "Invalid password" });
 
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) return res.status(401).json({ message: "Invalid password" });
-
-  const token = jwt.sign({ username }, SECRET_KEY, { expiresIn: "1h" });
-
-  res.json({ token });
+    const token = jwt.sign({ username: user.username }, SECRET_KEY, { expiresIn: "1h" });
+    return res.json({ token });
+  } catch (err) {
+    console.error("Login error:", err);
+    return res.status(500).json({ message: "Could not read account data. Check server storage and logs." });
+  }
 });
 
 function verifyToken(req, res, next) {
