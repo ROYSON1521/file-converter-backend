@@ -31,7 +31,7 @@ if (!SECRET_KEY) {
 }
 
 // Storage setup
-const MAX_UPLOAD_SIZE = 40 * 1024 * 1024;
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024;
 const upload = multer({ dest: 'uploads/', limits: { fileSize: MAX_UPLOAD_SIZE } });
 
 function transcodeAudio(inputPath, outputPath, outputFormat) {
@@ -120,12 +120,17 @@ function writeUsers(users) {
   fs.renameSync(tempPath, usersPath);
 }
 
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
 app.post("/register", async (req, res) => {
   try {
     const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
     const password = typeof req.body?.password === "string" ? req.body.password : "";
     if (!username || !password.trim()) {
       return res.status(400).json({ message: "Username and password required" });
+    }
+    if (password.length < 8 || !/^[A-Za-z0-9#_@]+$/.test(password) || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password) || !/[#_@]/.test(password)) {
+      return res.status(400).json({ message: "Password must be at least 8 characters and include letters, numbers, and one of #, _, or @." });
     }
 
     const users = readUsers();
@@ -334,7 +339,7 @@ if (!allowedMap[format]?.includes(ext)) {
 
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({ message: "File size exceeds the 40 MB limit." });
+    return res.status(413).json({ message: "File size exceeds the 50 MB limit." });
   }
   console.error("Request error:", err);
   return res.status(500).json({ message: "The server could not process the upload." });
